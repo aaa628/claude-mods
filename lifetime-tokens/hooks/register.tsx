@@ -1,6 +1,7 @@
 import type { Register } from 'claude-code'
 
 import { addUsage, report, start } from './count'
+import { DASHBOARD_URL, sync } from './sync'
 import { drawPane, launcherLabel, PANE, PANE_TITLE, togglePane } from './ui'
 
 export const register: Register = on => {
@@ -10,6 +11,10 @@ export const register: Register = on => {
       description: 'Open the lifetime token dashboard and print the totals',
     })
     await start($)
+    // Off the start path, then every minute (a no-op while nothing changed):
+    // copies the day totals to the dashboard on your Claude account.
+    $.clock.after(0, () => void sync($))
+    $.clock.every(60_000, () => void sync($))
 
     return next(e)
   })
@@ -20,7 +25,10 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
     const usage = e.usage ?? result.usage
-    if (usage) await addUsage($, usage)
+    if (usage) {
+      await addUsage($, usage)
+      $.clock.after(0, () => void sync($))
+    }
 
     return result
   }).catch(($, e, next) => next(e))
@@ -40,7 +48,7 @@ export const register: Register = on => {
     // carries the numbers either way.
     void $.ui.open({ id: PANE, title: PANE_TITLE }).catch(() => undefined)
 
-    return { text: await report($) }
+    return { text: `${await report($)}\nDashboard, every session and computer: ${DASHBOARD_URL}` }
   })
 
   // The dashboard.

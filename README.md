@@ -13,7 +13,13 @@ Keeps a running count of every token you've used in Claude Code on your machine,
 
 The first time it runs it reads the session transcripts already on your machine, so your total starts from your real history (Claude Code keeps transcripts for 30 days by default, so older history may be gone). From then on it counts every turn live, including subagents and context compaction. Totals live in the mod's own store in your Claude config folder, so every session adds to the same number.
 
-It counts Claude Code usage on the machine it's installed on, not claude.ai chats or your other devices. The button and dashboard draw wherever Claude Code shows mod UI: the terminal and the desktop app's local sessions. A cloud session viewed in the app runs headless and draws no mod UI there; `/tokens` still works.
+It counts Claude Code usage, not claude.ai chats. The button and dashboard draw wherever Claude Code shows mod UI: the terminal and the desktop app's local sessions. A cloud session viewed in the app runs headless and draws no mod UI there; `/tokens` still works.
+
+### One total across cloud sessions and computers
+
+After every turn the mod also copies its daily totals to a dashboard page on your Claude account (one row per day for each session or computer), so cloud sessions, whose machines are wiped when they end, still add to one lifetime total. Open that page from the app's sidebar in any session; `/tokens` prints its link.
+
+The address of that page is `DASHBOARD_URL` in `lifetime-tokens/hooks/sync.ts`. It belongs to this repository's owner, so if you install the mod yourself, point it at a dashboard of your own; otherwise the copy is refused and everything else works as before.
 
 ### Install
 

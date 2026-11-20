@@ -292,3 +292,63 @@ test('sessions idle for two weeks fold into the archive', async ($, on) => {
   // 4 + 100 + 10: nothing lost in the fold.
   expect(statuses.at(-1)).toBe('Lifetime tokens: 114 · this session: 0')
 })
+
+type Write = { op: string; doc_id: string; data: { total: number }; if_version?: number }
+
+test('copies day totals to the dashboard, pinned to the versions it read', async ($, on) => {
+  const { clock } = world(on)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const dayOf = (ms: number) => {
+    const d = new Date(ms)
+
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  }
+  const today = `current_${dayOf(NOW)}`
+  const yesterday = `current_${dayOf(NOW - DAY)}`
+
+  const queries: unknown[] = []
+  const batches: Write[][] = []
+  let next = 10
+  on('tool.call', (_, e) => {
+    const input = e as unknown as { tool: string; action: string; query?: unknown; writes?: Write[] }
+    expect(input.tool).toBe('ArtifactData')
+    if (input.action === 'query') {
+      queries.push(input.query)
+
+      // Today's row is already on the dashboard, from an earlier machine.
+      return { result: {}, text: `=== BEGIN ===\n{"id":"${today}","data":{},"version":3}\n=== END ===` }
+    }
+    const writes = input.writes ?? []
+    batches.push(writes)
+
+    return {
+      result: {},
+      text: writes.map(w => `- set "data/usage/rows"/"${w.doc_id}" (version ${next++})`).join('\n'),
+    }
+  })
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  await clock.advance(60_000)
+
+  // History from the transcript: yesterday's 380, as a new row.
+  expect(queries).toEqual([{ where: [['machine', '==', 'current']], limit: 1000 }])
+  const first = batches.flat().find(w => w.doc_id === yesterday)
+  expect(first?.data.total).toBe(380)
+  expect(first?.if_version).toBeUndefined()
+
+  await $.turn.complete(TURN)
+  await clock.settle()
+  const second = batches.at(-1) ?? []
+  expect(second.map(w => w.doc_id)).toEqual([today])
+  expect(second[0]?.data.total).toBe(510_000)
+  expect(second[0]?.if_version).toBe(3)
+
+  await $.turn.complete({ ...TURN, turnId: 't2', usage: usage(1, 1, 1, 1) })
+  await clock.settle()
+  const third = batches.at(-1) ?? []
+  expect(third[0]?.data.total).toBe(510_004)
+  // Pinned to the version its own last write left, not read again.
+  expect(third[0]?.if_version).toBe(next - 2)
+  expect(queries.length).toBe(1)
+})

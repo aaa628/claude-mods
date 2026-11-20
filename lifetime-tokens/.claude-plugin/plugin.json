@@ -1,0 +1,6 @@
+{
+  "name": "lifetime-tokens",
+  "version": "0.3.0",
+  "description": "Shows how many tokens you have used across all your Claude Code sessions: a dashboard, a launcher button by the prompt, the status line and /tokens",
+  "types": "./types/index.d.ts"
+}

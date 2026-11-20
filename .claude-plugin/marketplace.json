@@ -1,0 +1,14 @@
+{
+  "name": "claude-mods",
+  "owner": {
+    "name": "aaa628"
+  },
+  "description": "Mods for Claude Code: themes, panes and tools that change how Claude Code looks and works.",
+  "plugins": [
+    {
+      "name": "lifetime-tokens",
+      "source": "./lifetime-tokens",
+      "description": "Shows how many tokens you have used across all your Claude Code sessions: a dashboard, a launcher button by the prompt, the status line and /tokens"
+    }
+  ]
+}

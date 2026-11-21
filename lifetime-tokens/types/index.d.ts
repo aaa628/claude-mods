@@ -15,6 +15,8 @@ export type View = {
   sessions: number
   since: number
   isScanning: boolean
+  // True once the dashboard's rows, every session and computer, were read.
+  isAccount: boolean
   days: DayTotal[]
   history: { files: number; messages: number } | null
 }

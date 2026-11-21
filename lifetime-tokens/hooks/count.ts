@@ -31,6 +31,16 @@ const ARCHIVE_KEY = 'archive'
 const SESSION_PREFIX = 'session:'
 const DAY_PREFIX = 'day:'
 const INSTALLED_KEY = 'installedAt'
+// Every session and computer's totals, as sync.ts last read them from the
+// dashboard.
+export const ACCOUNT_KEY = 'account'
+export type Account = {
+  totals: Totals
+  days: Record<string, number>
+  machines: number
+  since: string | null
+  at: number
+}
 
 // Sessions untouched this long are folded into one archive total so the
 // store stays small however many sessions there have been.
@@ -43,7 +53,7 @@ const SPARK = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 const view = atom({ plugin: 'lifetime-tokens', key: 'view' } as const, null, {
-  shape: 'view-1',
+  shape: 'view-2',
 })
 
 // The module's own variables start over at a reload; the counts live in
@@ -261,7 +271,25 @@ async function readView($: Engine): Promise<View> {
   }
 
   const backfill = (await $.store.get(BACKFILL_KEY)) as Backfill | undefined
-  const days: DayTotal[] = chart.map(d => ({ ...d, total: byDay.get(d.day) ?? 0 }))
+  const history = backfill === undefined ? null : { files: backfill.files, messages: backfill.messages }
+  const account = (await $.store.get(ACCOUNT_KEY)) as Partial<Account> | undefined
+
+  // The dashboard's rows, once read, are the whole account: this machine's
+  // rows among them, as of the last sync.
+  if (account?.totals !== undefined) {
+    const since = typeof account.since === 'string' ? Date.parse(`${account.since}T12:00:00`) : Number.NaN
+
+    return {
+      lifetime: asTotals(account.totals),
+      session,
+      sessions: num(account.machines),
+      since: Number.isNaN(since) ? num(await $.store.get(INSTALLED_KEY)) : since,
+      isScanning: false,
+      isAccount: true,
+      days: chart.map(d => ({ ...d, total: num(account.days?.[d.day]) })),
+      history,
+    }
+  }
 
   return {
     lifetime,
@@ -269,8 +297,9 @@ async function readView($: Engine): Promise<View> {
     sessions,
     since: num(await $.store.get(INSTALLED_KEY)),
     isScanning: backfill === undefined,
-    days,
-    history: backfill === undefined ? null : { files: backfill.files, messages: backfill.messages },
+    isAccount: false,
+    days: chart.map(d => ({ ...d, total: byDay.get(d.day) ?? 0 })),
+    history,
   }
 }
 
@@ -428,7 +457,9 @@ export async function report($: Engine): Promise<string> {
     .join(' ')
 
   return [
-    'Lifetime token usage, every session on this machine',
+    v.isAccount
+      ? 'Lifetime token usage, every session and computer on your account'
+      : 'Lifetime token usage, every session on this machine',
     table,
     '',
     `  Last 14 days  ${bars}   (${v.days[0]?.label ?? ''} → today, peak ${short(peak)}/day)`,
@@ -436,6 +467,8 @@ export async function report($: Engine): Promise<string> {
     `This session: ${long(sum(v.session))} ` +
       `(input ${short(v.session.input)}, output ${short(v.session.output)}, ` +
       `cache writes ${short(v.session.cacheWrite)}, cache reads ${short(v.session.cacheRead)})`,
-    `Counted live since ${since} across ${long(v.sessions)} sessions. ${history}`,
+    v.isAccount
+      ? `Since ${since}, across ${long(v.sessions)} sessions and computers.`
+      : `Counted live since ${since} across ${long(v.sessions)} sessions. ${history}`,
   ].join('\n')
 }

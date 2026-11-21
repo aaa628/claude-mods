@@ -40,8 +40,13 @@ const TRANSCRIPT = [
 
 // What lies beneath the plugin in a session with one earlier session in the
 // store and one transcript on disk: the test stands for the engine.
-const world = (on: On) => {
+const world = (
+  on: On,
+  env: Record<string, string> = {},
+  stored: Record<string, unknown> = {},
+) => {
   const clock = mock.clock(on, { now: NOW })
+  mock.env(on, env)
   mock.store(on, {
     // An earlier session, recent enough to keep its own entry.
     'session:old': {
@@ -51,6 +56,7 @@ const world = (on: On) => {
       cacheWrite: 0,
       updatedAt: NOW - DAY,
     },
+    ...stored,
   })
 
   const statuses: (string | undefined)[] = []
@@ -293,38 +299,72 @@ test('sessions idle for two weeks fold into the archive', async ($, on) => {
   expect(statuses.at(-1)).toBe('Lifetime tokens: 114 · this session: 0')
 })
 
-type Write = { op: string; doc_id: string; data: { total: number }; if_version?: number }
+type Write = {
+  op: string
+  doc_id: string
+  data?: { total: number; machine: string }
+  if_version?: number
+}
+type Query = { where?: [string, string, string][]; limit: number }
 
-test('copies day totals to the dashboard, pinned to the versions it read', async ($, on) => {
-  const { clock } = world(on)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  const dayOf = (ms: number) => {
-    const d = new Date(ms)
+const pad = (n: number) => String(n).padStart(2, '0')
+const dayOf = (ms: number) => {
+  const d = new Date(ms)
 
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-  }
-  const today = `current_${dayOf(NOW)}`
-  const yesterday = `current_${dayOf(NOW - DAY)}`
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+const doc = (id: string, version: number, data: Record<string, unknown>) =>
+  JSON.stringify({ id, version, data })
 
-  const queries: unknown[] = []
+// The dashboard: rows by id, answering queries and batches as ArtifactData does.
+const dashboard = (on: On, seed: Record<string, Record<string, unknown>> = {}) => {
+  const rows = new Map(Object.entries(seed).map(([id, data]) => [id, { version: 1, data }]))
+  const queries: Query[] = []
   const batches: Write[][] = []
-  let next = 10
   on('tool.call', (_, e) => {
-    const input = e as unknown as { tool: string; action: string; query?: unknown; writes?: Write[] }
+    const input = e as unknown as { tool: string; action: string; query: Query; writes?: Write[] }
     expect(input.tool).toBe('ArtifactData')
     if (input.action === 'query') {
       queries.push(input.query)
+      const machine = input.query.where?.[0]?.[2]
+      const found = [...rows].filter(([, r]) => machine === undefined || r.data.machine === machine)
+      const lines = found.map(([id, r]) => doc(id, r.version, r.data))
 
-      // Today's row is already on the dashboard, from an earlier machine.
-      return { result: {}, text: `=== BEGIN ===\n{"id":"${today}","data":{},"version":3}\n=== END ===` }
+      return { result: {}, text: `=== BEGIN ===\n${lines.join('\n')}\n=== END ===` }
     }
     const writes = input.writes ?? []
     batches.push(writes)
-
-    return {
-      result: {},
-      text: writes.map(w => `- set "data/usage/rows"/"${w.doc_id}" (version ${next++})`).join('\n'),
+    for (const w of writes) {
+      const had = rows.get(w.doc_id)
+      if (had !== undefined && w.if_version !== had.version) {
+        return { result: {}, text: 'version_mismatch', isError: true }
+      }
     }
+    const lines = writes.map(w => {
+      if (w.op === 'delete') {
+        rows.delete(w.doc_id)
+
+        return `- delete "data/usage/rows"/"${w.doc_id}"`
+      }
+      const version = (rows.get(w.doc_id)?.version ?? 0) + 1
+      rows.set(w.doc_id, { version, data: w.data ?? {} })
+
+      return `- set "data/usage/rows"/"${w.doc_id}" (version ${version})`
+    })
+
+    return { result: {}, text: lines.join('\n') }
+  })
+
+  return { rows, queries, batches }
+}
+
+test('copies day totals to the dashboard, pinned to the versions it read', async ($, on) => {
+  const { clock } = world(on)
+  const today = `current_${dayOf(NOW)}`
+  const yesterday = `current_${dayOf(NOW - DAY)}`
+  // Today's row is already there, from this machine's earlier run.
+  const { rows, queries, batches } = dashboard(on, {
+    [today]: { machine: 'current', day: dayOf(NOW), input: 1 },
   })
 
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
@@ -332,23 +372,56 @@ test('copies day totals to the dashboard, pinned to the versions it read', async
   await clock.advance(60_000)
 
   // History from the transcript: yesterday's 380, as a new row.
-  expect(queries).toEqual([{ where: [['machine', '==', 'current']], limit: 1000 }])
-  const first = batches.flat().find(w => w.doc_id === yesterday)
-  expect(first?.data.total).toBe(380)
-  expect(first?.if_version).toBeUndefined()
+  expect(rows.get(yesterday)?.data.total).toBe(380)
+  expect(batches.flat().find(w => w.doc_id === yesterday)?.if_version).toBeUndefined()
 
   await $.turn.complete(TURN)
   await clock.settle()
   const second = batches.at(-1) ?? []
   expect(second.map(w => w.doc_id)).toEqual([today])
-  expect(second[0]?.data.total).toBe(510_000)
-  expect(second[0]?.if_version).toBe(3)
+  expect(second[0]?.data?.total).toBe(510_000)
+  // Pinned to the version it read.
+  expect(second[0]?.if_version).toBe(1)
 
   await $.turn.complete({ ...TURN, turnId: 't2', usage: usage(1, 1, 1, 1) })
   await clock.settle()
-  const third = batches.at(-1) ?? []
-  expect(third[0]?.data.total).toBe(510_004)
-  // Pinned to the version its own last write left, not read again.
-  expect(third[0]?.if_version).toBe(next - 2)
-  expect(queries.length).toBe(1)
+  expect(rows.get(today)?.data.total).toBe(510_004)
+  // Its own machine's rows were read once; the account after every sync.
+  expect(queries.filter(q => q.where !== undefined).length).toBe(1)
+  expect(queries.filter(q => q.where === undefined).length).toBeGreaterThan(1)
+})
+
+test('a cloud session counts the whole account and renames its old rows', async ($, on) => {
+  const { clock, statuses } = world(
+    on,
+    { CLAUDE_CODE_REMOTE_SESSION_ID: 'cse_ABC123' },
+    // An earlier version named this machine by its local session id.
+    { machine: 'current' },
+  )
+  const { rows } = dashboard(on, {
+    [`current_${dayOf(NOW - 2 * DAY)}`]: { machine: 'current', day: dayOf(NOW - 2 * DAY), input: 7 },
+    // Another session's row: counted, never touched.
+    [`cloud-OTHER_${dayOf(NOW)}`]: { machine: 'cloud-OTHER', day: dayOf(NOW), input: 1_000_000 },
+  })
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  await clock.advance(60_000)
+
+  const ids = [...rows.keys()].sort()
+  expect(ids).toEqual([`cloud-ABC123_${dayOf(NOW - DAY)}`, `cloud-OTHER_${dayOf(NOW)}`])
+  expect(rows.get(`cloud-ABC123_${dayOf(NOW - DAY)}`)?.data.machine).toBe('cloud-ABC123')
+
+  // 380 of this machine's history plus the other session's million.
+  expect(statuses.at(-1)).toBe('Lifetime tokens: 1.00M · this session: 0')
+
+  const out = await $.command.run({
+    command: 'tokens',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 80 },
+  })
+  expect(out.text).toContain('every session and computer on your account')
+  expect(out.text).toContain('Total         1,000,380')
+  expect(out.text).toContain('across 2 sessions and computers')
 })

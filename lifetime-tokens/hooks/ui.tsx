@@ -10,7 +10,7 @@ type Engine = EngineInterface
 
 // What count.ts writes after every counted turn; read here while drawing.
 const view = atom({ plugin: 'lifetime-tokens', key: 'view' } as const, null, {
-  shape: 'view-1',
+  shape: 'view-2',
 })
 
 export const PANE = 'lifetime-tokens'
@@ -225,7 +225,9 @@ export async function drawPane($: Engine, e: RenderInput<'Pane'>): Promise<Rende
   const columns = Math.max(20, e.props.bodyColumns - 2)
   const since = v.since > 0 ? ` since ${dateLabel(v.since)}` : ''
   const scanning = v.isScanning ? ' · reading past sessions…' : ''
-  const sessions = `${long(v.sessions)} session${v.sessions === 1 ? '' : 's'}`
+  const sessions = v.isAccount
+    ? `${long(v.sessions)} sessions and computers`
+    : `${long(v.sessions)} session${v.sessions === 1 ? '' : 's'} on this machine`
 
   const hero = (
     <Box flexDirection="column">
